@@ -1,6 +1,7 @@
 export function typescriptKeywordSyntax(symbol: string): string | undefined {
     switch (symbol) {
         case 'scip-typescript npm typescript . array#':
+        case 'scip-typescript npm typescript . tuple#':
             return 'List'
         case 'scip-typescript npm typescript . null#':
             return 'Null'

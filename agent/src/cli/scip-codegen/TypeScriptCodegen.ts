@@ -5,6 +5,7 @@ import { CodePrinter } from "./CodePrinter";
 import { resetOutputPath } from "./resetOutputPath";
 import { scip } from "./scip";
 import {
+    capitalize,
     isTypescriptKeyword,
     typescriptKeyword,
     typescriptKeywordSyntax,
@@ -63,8 +64,7 @@ export class TypeScriptCodegen extends BaseCodegen {
         } else {
             const discriminatedUnion = this.discriminatedUnions.get(info.symbol)
             if (discriminatedUnion) {
-                p.line('//  discriminated union');
-                //this.writeSealedClass(c, name, info, discriminatedUnion)
+                this.writeSealedClass(p, name, info, discriminatedUnion)
             } else {
                 this.writeDataClass(p, name, info)
             }
@@ -73,10 +73,81 @@ export class TypeScriptCodegen extends BaseCodegen {
         // await fspromises.writeFile(path.join(this.options.output, `${name}.kt`), p.build())
     }
 
+    private async writeSealedClass(
+        p: CodePrinter,
+        name: string,
+        info: scip.SymbolInformation,
+        union: DiscriminatedUnion
+    ): Promise<void> {
+        p.line()
+        p.line(`export interface ${name} {`)
+        //p.block(() => {
+        //    p.line('companion object {')
+        //    p.block(() => {
+        //        p.line(`val deserializer: JsonDeserializer<${name}> =`)
+        //        p.block(() => {
+        //            p.line(
+        //                'JsonDeserializer { element: JsonElement, _: Type, context: JsonDeserializationContext ->'
+        //            )
+        //            p.block(() => {
+        //                p.line(
+        //                    `when (element.asJsonObject.get("${union.discriminatorDisplayName}").asString) {`
+        //                )
+        //                p.block(() => {
+        //                    for (const member of union.members) {
+        //                        const typeName = this.f.discriminatedUnionTypeName(union, member)
+        //                        p.line(
+        //                            `"${member.value}" -> context.deserialize<${typeName}>(element, ${typeName}::class.java)`
+        //                        )
+        //                    }
+        //                    p.line('else -> throw Exception("Unknown discriminator ${element}")')
+        //                })
+        //                p.line('}')
+        //            })
+        //            p.line('}')
+        //        })
+        //    })
+        //    p.line('}')
+        //})
+        p.line('}')
+        for (const member of union.members) {
+            p.line()
+            const typeName = this.discriminatedUnionTypeName(union, member)
+            const info = member.type.has_type_ref
+                ? this.symtab.info(member.type.type_ref.symbol)
+                : new scip.SymbolInformation({
+                    display_name: typeName,
+                    signature: new scip.Signature({
+                        value_signature: new scip.ValueSignature({ tpe: member.type }),
+                    }),
+                })
+            this.writeDataClass(p, typeName, info, {
+                heritageClause: ` : ${name}()`,
+            })
+        }
+    }
+
+    public discriminatedUnionTypeName(
+        union: DiscriminatedUnion,
+        member: DiscriminatedUnionMember
+    ): string {
+        if (member.type.has_type_ref) {
+            return this.symtab.info(member.type.type_ref.symbol).display_name
+        }
+        return capitalize(
+            this.formatFieldName(member.value + this.symtab.info(union.symbol).display_name)
+        )
+    }
+
+    public formatFieldName(name: string): string {
+        return name.replace(':', '_').replace('/', '_')
+    }
+
     private async writeDataClass(
         p: CodePrinter,
         name: string,
         info: scip.SymbolInformation,
+        params?: { heritageClause?: string }
     ): Promise<void> {
         if (info.kind === scip.SymbolInformation.Kind.Class) {
             this.reporter.warn(
@@ -86,9 +157,18 @@ export class TypeScriptCodegen extends BaseCodegen {
         }
         const generatedName = new Set<string>()
         const enums: { name: string; members: string[] }[] = []
-        p.line(`interface ${name} {`)
+        p.line(`// ${params?.heritageClause}`)
+        p.line(`export interface ${name} {`)
         p.block(() => {
             for (const memberSymbol of this.infoProperties(info)) {
+                if (
+                    this.ignoredProperties.find(ignoredProperty =>
+                        memberSymbol.includes(ignoredProperty)
+                    )
+                ) {
+                    continue
+                }
+
                 if (memberSymbol.endsWith('().')) {
                     // Ignore method members because they should not leak into
                     // the protocol in the first place because functions don't
@@ -121,11 +201,8 @@ export class TypeScriptCodegen extends BaseCodegen {
                 if (memberType === undefined) {
                     throw new TypeError(`no type: ${JSON.stringify(member.toObject(), null, 2)}`)
                 }
-                if (
-                    memberType.has_type_ref &&
-                    memberType.type_ref.symbol.endsWith(' lib/`lib.es5.d.ts`/Omit#')
-                ) {
-                    // FIXME
+
+                if (this.isIgnoredType(memberType)) {
                     continue
                 }
 
@@ -134,7 +211,7 @@ export class TypeScriptCodegen extends BaseCodegen {
                 const nullSyntax = this.nullableSyntax(memberType)
 
 
-                if (constants.length > 0 && memberTypeSyntax.startsWith('String')) {
+                if (constants.length > 0 && memberTypeSyntax.startsWith('string')) {
                     const enumTypeName = member.display_name
                     memberTypeSyntax = enumTypeName
                     enums.push({ name: enumTypeName, members: constants })
@@ -270,9 +347,9 @@ export class TypeScriptCodegen extends BaseCodegen {
                     )
                     this.queueClassLikeType(nonNullableTypes[exceptionIndex], jsonrpcMethod, kind)
                 } else {
-                    throw new Error(
-                        `unsupported union type: ${JSON.stringify(jsonrpcMethod.toObject(), null, 2)}`
-                    )
+                    //throw new Error(
+                    //    `unsupported union type: ${JSON.stringify(jsonrpcMethod.toObject(), null, 2)}`
+                    //)
                 }
             }
             return
@@ -282,7 +359,7 @@ export class TypeScriptCodegen extends BaseCodegen {
             return
         }
 
-        throw new Error(`unsupported type: ${this.debug(type)}`)
+        //throw new Error(`unsupported type: ${this.debug(type)}`)
     }
 
     // Same as `queueClassLikeType` but for `scip.SymbolInformation` instead of `scip.Type`.
@@ -435,7 +512,7 @@ export class TypeScriptCodegen extends BaseCodegen {
                 //const resultName = resultInfo.display_name
 
                 p.line(
-                    dedent(`const ${methodVariableName} = new rpc.RequestType<
+                    dedent(`export const ${methodVariableName} = new rpc.RequestType<
                         ${parameterName},
                         ${resultName},
                         void
@@ -459,7 +536,13 @@ export class TypeScriptCodegen extends BaseCodegen {
             return "Uri";
         }
 
+        //return info.display_name
+
         return info.display_name
+            .replaceAll('$/', '')
+            .split('/')
+            .map(part => capitalize(part))
+            .join('_')
     }
 
     private aliasType(info: scip.SymbolInformation): string | undefined {
@@ -618,16 +701,18 @@ export class TypeScriptCodegen extends BaseCodegen {
             }
         }
 
-        throw new Error(
-            `no syntax: ${JSON.stringify(
-                {
-                    jsonrpcMethod: jsonrpcMethod.toObject(),
-                    parameterOrResultType: parameterOrResultType.toObject(),
-                },
-                null,
-                2,
-            )}`,
-        );
+        return 'any';
+
+        //throw new Error(
+        //    `no syntax: ${JSON.stringify(
+        //        {
+        //            jsonrpcMethod: jsonrpcMethod.toObject(),
+        //            parameterOrResultType: parameterOrResultType.toObject(),
+        //        },
+        //        null,
+        //        2,
+        //    )}`,
+        //);
     }
 
     public isNullish(symbol: string): boolean {
@@ -725,4 +810,30 @@ export class TypeScriptCodegen extends BaseCodegen {
         }
         return undefined
     }
+
+    // TODO: REMOVE WHEN OLAF PR LANDS
+    private readonly ignoredTypeRefs = [
+        'npm @sourcegraph/telemetry', // Too many complicated types from this package
+        '/TelemetryEventParameters#',
+        ' lib/`lib.es5.d.ts`/Omit#',
+    ]
+
+    public isIgnoredType(tpe: scip.Type): boolean {
+        if (tpe.has_type_ref) {
+            return this.ignoredTypeRefs.some(ref => tpe.type_ref.symbol.includes(ref))
+        }
+
+        if (tpe.has_union_type) {
+            const nonNullableTypes = tpe.union_type.types.filter(tpe => !this.isNullable(tpe))
+            if (nonNullableTypes.length === 1) {
+                return this.isIgnoredType(nonNullableTypes[0])
+            }
+        }
+        return false
+    }
+
+    public readonly ignoredProperties = [
+        'npm @sourcegraph/telemetry ', // Too many complicated types from this package
+    ]
+    //if (info.signature.h
 }
